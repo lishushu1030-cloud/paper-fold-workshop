@@ -1,0 +1,561 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>折纸展开</title>
+<style>
+  html,body{margin:0;height:100%;background:#dfe3e8;overflow:hidden;
+    font-family:system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif}
+  #c{position:fixed;inset:0;width:100%;height:100%;display:block;touch-action:none}
+  #bar{position:fixed;left:50%;bottom:max(20px,env(safe-area-inset-bottom));transform:translateX(-50%);
+    width:min(560px,calc(100% - 32px));box-sizing:border-box;display:flex;align-items:center;gap:12px;
+    padding:8px 16px 8px 8px;border-radius:999px;background:rgba(255,255,255,.72);
+    -webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);
+    box-shadow:0 2px 12px rgba(0,0,0,.12);color:#333;font-size:14px;user-select:none}
+  #bar input{flex:1;min-width:0;accent-color:#c86a2a}
+  #play{width:36px;height:36px;border:0;border-radius:50%;background:#c86a2a;color:#fff;font-size:13px;
+    cursor:pointer;flex:none;line-height:1;padding:0}
+  #play:active{transform:scale(.94)}
+  #val{min-width:3.2em;text-align:right;font-variant-numeric:tabular-nums}
+</style>
+<!-- 霞鹜文楷（楷体风格）。加载失败时退回系统楷体。 -->
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/lxgw-wenkai-webfont@1/style.css">
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="bar">
+  <button id="play" aria-label="播放 / 暂停">❚❚</button>
+  <span>摊平</span>
+  <input id="s" type="range" min="0" max="100" step="0.1" value="100" aria-label="折叠进度">
+  <span>折好</span>
+  <span id="val">100%</span>
+</div>
+
+<!-- three.js r128 (UMD) + OrbitControls（r128 的 examples/js 版本，挂在 THREE 上） -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<script>
+(function () {
+'use strict';
+
+/* ══════════════ CONFIG（由生成器注入；也可手工替换） ══════════════ */
+const CONFIG = {
+  /* 封面贴片：1024×1024 RGBA PNG（主体+白边），base64 */
+  coverImg: 'data:image/png;base64,__COVER_IMG_B64__',
+  /* 封面方块在"折好俯视平面"(FRAMES[100] 的 x,z) 里的位置：minX/minZ 为左上角，S 为边长。
+     hull 为贴片外轮廓（凸包），图坐标 [u,v] ∈ [0,1]（y 向下）。 */
+  cover: __COVER_JSON__,
+  /* 展开后纸条上的文字 */
+  text: __TEXT_JSON__,
+  /* 纸纹（灰度/水彩纸 JPEG），铺满摊平后的纸面 */
+  paperImg: 'data:image/jpeg;base64,__PAPER_IMG_B64__'
+};
+
+/* ══════════════ 折纸数据：来自 Origami Simulator 导出的 .fold ══════════════
+   每帧 = 全部 12 个顶点的 xyz 扁平数组。键是折叠百分比（0 = 摊平，100 = 折好）。 */
+const FRAMES = {
+  "0": [-0.894206,-0.002799,0.447601,-0.894206,-0.0028,-0.446826,0.894648,-0.002799,0.447601,0.447435,-0.002799,0.447601,0.000221,-0.002799,0.447601,-0.446993,-0.002799,0.447601,0.894648,-0.002799,-0.446826,-0.446993,-0.0028,-0.446826,0.000221,-0.0028,-0.446826,0.447435,-0.0028,-0.446826,-0.446993,-0.0028,0.000388,0.447435,-0.002799,0.000388],
+  "25": [-0.411502,0.200849,0.45259,-0.411321,0.201076,-0.446699,0.421283,0.201307,0.452759,0.135601,0.053527,0.141259,0.005132,-0.239033,0.454372,-0.125531,0.053383,0.141205,0.421466,0.201535,-0.44653,-0.125475,0.053453,-0.135273,0.005315,-0.238805,-0.448534,0.135657,0.053597,-0.13522,-0.433784,-0.239161,0.00283,0.444231,-0.238677,0.003008],
+  "50": [-0.410722,0.202034,0.452915,-0.410542,0.202183,-0.446374,0.422061,0.20251,0.453082,0.136382,0.054695,0.141594,0.00592,-0.237839,0.454735,-0.124749,0.054547,0.141542,0.422244,0.202656,-0.446207,-0.124693,0.054592,-0.134937,0.006102,-0.237692,-0.448172,0.136438,0.05474,-0.134884,-0.432997,-0.238015,0.003193,0.445019,-0.237515,0.003371],
+  "80": [-0.126841,0.148879,0.448511,-0.12684,0.148874,-0.447617,0.127339,0.148878,0.448512,0.032404,0.005368,0.035781,0.000249,-0.163012,0.44896,-0.031905,0.005368,0.035781,0.127341,0.148874,-0.447617,-0.031905,0.005368,-0.034885,0.00025,-0.163018,-0.448061,0.032404,0.005368,-0.034885,-0.444626,-0.163016,0.000449,0.445125,-0.163017,0.00045],
+  "94": [-0.01193,0.048785,0.447774,-0.011929,0.048763,-0.446829,0.012411,0.048785,0.447774,0.003106,-0.002714,0.003648,0.00024,-0.054916,0.447806,-0.002624,-0.002714,0.003648,0.012413,0.048763,-0.446829,-0.002624,-0.002714,-0.002701,0.000241,-0.054938,-0.446856,0.003106,-0.002714,-0.002701,-0.446762,-0.054925,0.000475,0.447243,-0.054931,0.000476],
+  "100": [0.000112,-0.001057,0.447363,0.000112,-0.001058,-0.447065,0.000113,-0.001057,0.447363,0.000113,-0.001058,0.000149,0.000113,-0.001057,0.447363,0.000112,-0.001058,0.000149,0.000113,-0.001058,-0.447065,0.000112,-0.001058,0.000149,0.000113,-0.001058,-0.447065,0.000113,-0.001058,0.000149,-0.447101,-0.001058,0.000149,0.447326,-0.001057,0.000149]
+};
+/* 三角面表（顶点下标）。四边形 [8,10,4,11] 已拆成 [8,10,4] 和 [8,4,11]。 */
+const FACES = [[1,0,10],[10,0,5],[7,1,10],[3,2,11],[11,2,6],[4,3,11],[5,4,10],[8,10,4],[8,4,11],[11,6,9],[8,7,10],[9,8,11]];
+const KEYS = [0, 25, 50, 80, 94, 100];
+
+// <pure>
+/* 每个三角形在"折好"状态下的叠放层（0 最底），依据 94% 帧里各面的高低。 */
+const LAYER = [3, 2, 2, 2, 3, 1, 1, 0, 0, 2, 1, 1];
+const LAYER_GAP = 0.004;
+
+function smoothstep(a, b, x) {
+  const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
+  return t * t * (3 - 2 * t);
+}
+/* 相邻关键帧之间对每个顶点线性插值。 */
+function sampleFrame(p, out) {
+  p = Math.min(100, Math.max(0, p));
+  let i = 0;
+  while (i < KEYS.length - 2 && p > KEYS[i + 1]) i++;
+  const k0 = KEYS[i], k1 = KEYS[i + 1];
+  const a = FRAMES[k0], b = FRAMES[k1], t = (p - k0) / (k1 - k0);
+  for (let j = 0; j < a.length; j++) out[j] = a[j] + (b[j] - a[j]) * t;
+  return out;
+}
+/* 12 个共享顶点 → 每个三角形各自 3 个顶点，并按层序加一点 y 偏移防 z-fighting。 */
+function writeTriangles(v, p, pos) {
+  const w = smoothstep(85, 100, p);
+  for (let f = 0; f < FACES.length; f++) {
+    const dy = LAYER[f] * LAYER_GAP * w;
+    for (let c = 0; c < 3; c++) {
+      const vi = FACES[f][c] * 3, o = f * 9 + c * 3;
+      pos[o] = v[vi]; pos[o + 1] = v[vi + 1] + dy; pos[o + 2] = v[vi + 2];
+    }
+  }
+}
+/* 取景：对每个点单独列屏幕约束反推最小视距，取最大。不用包围球。 */
+function fitDistance(verts, center, polar, vfovDeg, aspect, fill) {
+  const tv = Math.tan(vfovDeg * Math.PI / 360) * fill, th = tv * aspect;
+  const cp = Math.cos(polar), sp = Math.sin(polar);
+  let d = 0;
+  for (let i = 0; i < verts.length; i += 3) {
+    const rx = verts[i] - center[0], ry = verts[i + 1] - center[1], rz = verts[i + 2] - center[2];
+    const y = ry * sp - rz * cp, z = -ry * cp - rz * sp;
+    d = Math.max(d, Math.abs(rx) / th - z, Math.abs(y) / tv - z);
+  }
+  return d;
+}
+function frameBounds(F) {
+  const b = { minX: Infinity, maxX: -Infinity, minZ: Infinity, maxZ: -Infinity };
+  for (let i = 0; i < F.length; i += 3) {
+    b.minX = Math.min(b.minX, F[i]); b.maxX = Math.max(b.maxX, F[i]);
+    b.minZ = Math.min(b.minZ, F[i + 2]); b.maxZ = Math.max(b.maxZ, F[i + 2]);
+  }
+  return b;
+}
+/* 摊平帧的 x/z 归一化成 UV；反面 u 取反。 */
+function buildUV(F, faces, flipU) {
+  const b = frameBounds(F), uv = new Float32Array(faces.length * 6);
+  for (let f = 0; f < faces.length; f++) for (let c = 0; c < 3; c++) {
+    const vi = faces[f][c] * 3;
+    const u = (F[vi] - b.minX) / (b.maxX - b.minX), v = 1 - (F[vi + 2] - b.minZ) / (b.maxZ - b.minZ);
+    uv[f * 6 + c * 2] = flipU ? 1 - u : u; uv[f * 6 + c * 2 + 1] = v;
+  }
+  return uv;
+}
+/* 凸多边形按半平面 n·p <= d 裁剪。 */
+function clipPoly(poly, n, d) {
+  const out = [];
+  for (let i = 0; i < poly.length; i++) {
+    const a = poly[i], b = poly[(i + 1) % poly.length];
+    const da = n[0] * a[0] + n[1] * a[1] - d, db = n[0] * b[0] + n[1] * b[1] - d;
+    if (da <= 0) out.push(a);
+    if ((da < 0 && db > 0) || (da > 0 && db < 0)) {
+      const t = da / (da - db);
+      out.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]);
+    }
+  }
+  return out;
+}
+function polyArea(p) {
+  let s = 0;
+  for (let i = 0; i < p.length; i++) { const a = p[i], b = p[(i + 1) % p.length]; s += a[0] * b[1] - b[0] * a[1]; }
+  return Math.abs(s) / 2;
+}
+/* 2x3 仿射：三角形在俯视平面 (x,z) 的 3 个角点 src → 它在当前帧的 3D 角点 dst。
+   P = o + (x-x0)·a + (z-z0)·b。面是刚体，所以任何位置的贴片点都精确跟随。 */
+function affineFromTri(src, dst) {
+  const e1x = src[1][0] - src[0][0], e1z = src[1][1] - src[0][1];
+  const e2x = src[2][0] - src[0][0], e2z = src[2][1] - src[0][1];
+  const det = e1x * e2z - e1z * e2x, a = [0, 0, 0], b = [0, 0, 0];
+  for (let c = 0; c < 3; c++) {
+    const E1 = dst[1][c] - dst[0][c], E2 = dst[2][c] - dst[0][c];
+    a[c] = (e2z * E1 - e1z * E2) / det; b[c] = (-e2x * E1 + e1x * E2) / det;
+  }
+  return { x0: src[0][0], z0: src[0][1], o: dst[0], a, b };
+}
+function triNormal(p0, p1, p2) {
+  const ux = p1[0] - p0[0], uy = p1[1] - p0[1], uz = p1[2] - p0[2];
+  const vx = p2[0] - p0[0], vy = p2[1] - p0[1], vz = p2[2] - p0[2];
+  const n = [uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx];
+  const l = Math.hypot(n[0], n[1], n[2]) || 1;
+  return [n[0] / l, n[1] / l, n[2] / l];
+}
+
+/* ── 时间线：停在折好 1.0s → 展开 2.4s → 停在展开读字 2.2s → 折回 2.4s，循环 ── */
+const LOOP = { hold: 1.0, open: 2.4, read: 2.2, close: 2.4 };
+const LOOP_T = LOOP.hold + LOOP.open + LOOP.read + LOOP.close;
+function easeInOut(t) { return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2; }
+function loopP(t) {                    // t 秒 → 折叠度 p（100 折好 … 0 摊平）
+  t = ((t % LOOP_T) + LOOP_T) % LOOP_T;
+  if (t < LOOP.hold) return 100;
+  t -= LOOP.hold;
+  if (t < LOOP.open) return 100 * (1 - easeInOut(t / LOOP.open));
+  t -= LOOP.open;
+  if (t < LOOP.read) return 0;
+  t -= LOOP.read;
+  return 100 * easeInOut(t / LOOP.close);
+}
+function openingTime(p) {              // 反解：从当前 p 接着"展开"，对应的时间线时刻
+  const target = 1 - p / 100; let lo = 0, hi = 1;
+  for (let i = 0; i < 30; i++) { const m = (lo + hi) / 2; if (easeInOut(m) < target) lo = m; else hi = m; }
+  return LOOP.hold + lo * LOOP.open;
+}
+
+/* ── 封面：折好后朝外的是 FACES[0] 和 FACES[4]（露出的是纸的反面）──
+   封面是一层独立薄片：正面是主体贴纸、背面是白的，贴在这两个面的反面一侧，随它们一起折。
+   展开后薄片被两个面带着摊开，伸出纸条之外的轮廓就成了留下来的"边角"。 */
+const COVER_FACES = [0, 4];
+const TOP = FRAMES[100];
+const covXZ = COVER_FACES.map((fi) => FACES[fi].map((vi) => [TOP[vi * 3], TOP[vi * 3 + 2]]));
+const covCenter = covXZ.map((t) => [(t[0][0] + t[1][0] + t[2][0]) / 3, (t[0][1] + t[1][1] + t[2][1]) / 3]);
+/* 两个贴面在俯视平面里共用的那条缝（共点的顶点连线）：封面在这里一分为二。 */
+const SEAM = (function () {
+  const pts = [];
+  covXZ[0].forEach((a) => covXZ[1].forEach((b) => { if (Math.hypot(a[0] - b[0], a[1] - b[1]) < 1e-3) pts.push(a); }));
+  const p0 = pts[0], p1 = pts[1];
+  let nx = -(p1[1] - p0[1]), nz = p1[0] - p0[0];
+  const l = Math.hypot(nx, nz); nx /= l; nz /= l;
+  if (nx * (covCenter[1][0] - covCenter[0][0]) + nz * (covCenter[1][1] - covCenter[0][1]) < 0) { nx = -nx; nz = -nz; }
+  return { n: [nx, nz], d: nx * p0[0] + nz * p0[1] };
+})();
+/* 封面方块与外轮廓（凸包）。hull 由图坐标 [u,v]（y 向下）换算到俯视平面 (x,z)。 */
+const COVER = (function () {
+  const c = CONFIG.cover;
+  const hull = c.hull.map(([u, v]) => [c.minX + u * c.S, c.minZ + (1 - v) * c.S]);
+  return { minX: c.minX, minZ: c.minZ, S: c.S, hull };
+})();
+const RECT = { minX: COVER.minX, minZ: COVER.minZ, w: COVER.S, h: COVER.S };
+const RECT_POLY = [[RECT.minX, RECT.minZ], [RECT.minX + RECT.w, RECT.minZ],
+                   [RECT.minX + RECT.w, RECT.minZ + RECT.h], [RECT.minX, RECT.minZ + RECT.h]];
+const OFF0 = 0.004, OFF_K = 0.006, OVERLAP = 0.004;
+
+function facePosOf(pos, k) {
+  const o = COVER_FACES[k] * 9;
+  return [[pos[o], pos[o + 1], pos[o + 2]], [pos[o + 3], pos[o + 4], pos[o + 5]], [pos[o + 6], pos[o + 7], pos[o + 8]]];
+}
+/* 把贴片方块沿折缝切成左右两块，各贴在对应的小三角面上；多留一点重叠，重叠处在着色器里按缝精确裁掉。 */
+function makePieces(pos) {
+  const out = [];
+  for (let k = 0; k < 2; k++) {
+    const keep = k === 0 ? { n: SEAM.n, d: SEAM.d } : { n: [-SEAM.n[0], -SEAM.n[1]], d: -SEAM.d };
+    const poly = clipPoly(RECT_POLY, keep.n, keep.d + OVERLAP);
+    if (poly.length < 3 || polyArea(poly) < 1e-6) continue;
+    const P = facePosOf(pos, k), nf = triNormal(P[0], P[1], P[2]), m = affineFromTri(covXZ[k], P);
+    const mp = (x, z) => [0, 1, 2].map((c) => m.o[c] + (x - m.x0) * m.a[c] + (z - m.z0) * m.b[c]);
+    const fn = triNormal(mp(poly[0][0], poly[0][1]), mp(poly[1][0], poly[1][1]), mp(poly[2][0], poly[2][1]));
+    const flip = (fn[0] * -nf[0] + fn[1] * -nf[1] + fn[2] * -nf[2]) < 0;    // 贴片正面朝纸的反面一侧
+    const verts = [];
+    for (let t = 0; t < poly.length - 2; t++)
+      (flip ? [0, t + 2, t + 1] : [0, t + 1, t + 2]).forEach((i) => verts.push(poly[i]));
+    out.push({ k, verts, keep });
+  }
+  return out;
+}
+/* 取景用：封面外轮廓（凸包）的各点，在每个关键帧里随所在的面一起落到哪里。
+   封面边角在折叠中途会立起来，只按摊平态取景的话会飞出画面，所以把整个折叠过程都算进去。 */
+function coverFitPoints() {
+  const pts = [];
+  KEYS.forEach((kp) => {
+    const t = new Float32Array(FRAMES[0].length), pos = new Float32Array(FACES.length * 9);
+    sampleFrame(kp, t); writeTriangles(t, kp, pos);
+    const maps = [0, 1].map((k) => affineFromTri(covXZ[k], facePosOf(pos, k)));
+    COVER.hull.forEach((h) => {
+      const m = maps[(SEAM.n[0] * h[0] + SEAM.n[1] * h[1] <= SEAM.d) ? 0 : 1];
+      for (let c = 0; c < 3; c++) pts.push(m.o[c] + (h[0] - m.x0) * m.a[c] + (h[1] - m.z0) * m.b[c]);
+    });
+  });
+  return pts;
+}
+/* 当前帧：每个贴面一个仿射矩阵，把俯视平面 (x,z) 映到该面的 3D 位置；再沿"反面一侧"的法线向外推。
+   推的距离 = OFF0 + (层序 - 1.5) × (p/100)² × 系数，摊平时只剩 OFF0。 */
+function pieceWorld(pc, pos, p, out) {
+  const P = facePosOf(pos, pc.k), n = triNormal(P[0], P[1], P[2]), m = affineFromTri(covXZ[pc.k], P);
+  const e = Math.pow(p / 100, 2) * OFF_K;
+  const off = OFF0 + (LAYER[COVER_FACES[pc.k]] - 1.5) * e;
+  for (let i = 0; i < pc.verts.length; i++) {
+    const dx = pc.verts[i][0] - m.x0, dz = pc.verts[i][1] - m.z0;
+    for (let c = 0; c < 3; c++) out[i * 3 + c] = m.o[c] + dx * m.a[c] + dz * m.b[c] - n[c] * off;
+  }
+  return { pos: out, n };
+}
+// </pure>
+
+/* ══════════════ 场景 ══════════════ */
+const canvas = document.getElementById('c');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0xdfe3e8);
+const camera = new THREE.PerspectiveCamera(40, 1, 0.01, 50);
+
+scene.add(new THREE.HemisphereLight(0xffffff, 0xcfc4b8, 0.72));
+const sun = new THREE.DirectionalLight(0xffffff, 0.28);
+sun.position.set(1.2, 2.2, 1.4);
+scene.add(sun);
+
+const state = { p: 100, playing: true, t0: performance.now() / 1000, tPlay: 0 };
+const frameV = new Float32Array(FRAMES[0].length);
+const posArr = new Float32Array(FACES.length * 9);
+
+/* ── 纸面纹理：纸纹 + 文字（画在摊平 UV 空间） ── */
+const paperCanvas = document.createElement('canvas');
+paperCanvas.width = 2048; paperCanvas.height = 1024;
+function drawPaper() {
+  const g = paperCanvas.getContext('2d');
+  g.clearRect(0, 0, 2048, 1024);
+  const T = CONFIG.text || { content: '', font: 'serif', color: '#3a2f26' };
+  const img = paperImgEl;
+  if (img) g.drawImage(img, 0, 0, 2048, 1024);
+  else { g.fillStyle = '#f3efe6'; g.fillRect(0, 0, 2048, 1024); }
+  const lines = String(T.content || '').split('\n').filter(s => s.length);
+  if (!lines.length) return;
+  let size = T.size || 150;
+  g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.fillStyle = T.color || '#3a2f26';
+  const lh = size * 1.4;
+  const totalH = lh * lines.length;
+  for (;;) {
+    g.font = size + 'px ' + T.font;
+    const widest = Math.max(...lines.map(s => g.measureText(s).width));
+    if (widest <= 2048 * 0.82 && totalH * (size / (T.size || 150)) <= 1024 * 0.5) break;
+    size *= 0.94;
+    if (size < 20) break;
+  }
+  const cy = 1024 * 0.5;
+  lines.forEach((s, i) => {
+    g.font = size + 'px ' + T.font;
+    g.fillText(s, 1024, cy + (i - (lines.length - 1) / 2) * size * 1.4);
+  });
+}
+const paperTex = new THREE.CanvasTexture(paperCanvas);
+paperTex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+
+/* 背面纹理：纯纸纹（封面贴在这侧，露出来时纸背是素净的） */
+const backCanvas = document.createElement('canvas');
+backCanvas.width = 1024; backCanvas.height = 512;
+const backTex = new THREE.CanvasTexture(backCanvas);
+/* 纸纹专用纹理（不含文字）：封面薄片摊平后采样它。与纸面同源同图同 UV 映射，
+   边角和纸条的褶皱纹理完全连续；薄片伸出纸条之外的部分用平铺（Repeat）接上。 */
+const paperOnlyCanvas = document.createElement('canvas');
+paperOnlyCanvas.width = 2048; paperOnlyCanvas.height = 1024;
+const paperOnlyTex = new THREE.CanvasTexture(paperOnlyCanvas);
+paperOnlyTex.wrapS = paperOnlyTex.wrapT = THREE.RepeatWrapping;
+paperOnlyTex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+function drawPaperOnly() {
+  const g = paperOnlyCanvas.getContext('2d');
+  g.clearRect(0, 0, 2048, 1024);
+  if (paperImgEl.complete && paperImgEl.naturalWidth) g.drawImage(paperImgEl, 0, 0, 2048, 1024);
+  else { g.fillStyle = '#f3efe6'; g.fillRect(0, 0, 2048, 1024); }
+  paperOnlyTex.needsUpdate = true;
+}
+function onPaperImg() {
+  drawPaper(); paperTex.needsUpdate = true; makeBackTex(); drawPaperOnly();
+}
+const paperImgEl = new Image();
+paperImgEl.onload = onPaperImg;
+paperImgEl.src = CONFIG.paperImg;
+if (paperImgEl.complete && paperImgEl.naturalWidth) onPaperImg();
+function makeBackTex() {
+  const g = backCanvas.getContext('2d');
+  g.fillStyle = '#efe9dc'; g.fillRect(0, 0, 1024, 512);
+  if (paperImgEl.complete && paperImgEl.naturalWidth) g.drawImage(paperImgEl, 0, 0, 1024, 512);
+  g.fillStyle = 'rgba(255,255,255,.35)'; g.fillRect(0, 0, 1024, 512);
+  backTex.needsUpdate = true;
+}
+
+/* ── 纸网格：正面（字面）+ 背面（素纸），位置每帧随 writeTriangles 更新 ── */
+function buildPaperGeom(uv, flip) {
+  const g = new THREE.BufferGeometry();
+  const pos = new Float32Array(FACES.length * 9);
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  g.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+  const idx = [];
+  for (let f = 0; f < FACES.length; f++) {
+    const o = f * 3;
+    if (flip) idx.push(o, o + 2, o + 1); else idx.push(o, o + 1, o + 2);
+  }
+  g.setIndex(idx);
+  g.frustumCulled = false;
+  return g;
+}
+const frontGeom = buildPaperGeom(buildUV(FRAMES[0], FACES, false), false);
+const backGeom = buildPaperGeom(buildUV(FRAMES[0], FACES, true), true);
+const paperFront = new THREE.Mesh(frontGeom, new THREE.MeshLambertMaterial({ map: paperTex }));
+const paperBack = new THREE.Mesh(backGeom, new THREE.MeshLambertMaterial({ map: backTex }));
+paperFront.renderOrder = 0; paperBack.renderOrder = 0;
+scene.add(paperFront, paperBack);
+
+/* ── 封面薄片：两块网格，位置每帧 pieceWorld；重叠处用着色器按缝裁掉 ── */
+const coverTexEl = new Image();
+coverTexEl.onload = () => { coverTex.image = coverTexEl; coverTex.needsUpdate = true; };
+const coverTex = new THREE.CanvasTexture(coverTexEl);
+coverTex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+coverTexEl.src = CONFIG.coverImg;
+if (coverTexEl.complete && coverTexEl.naturalWidth) coverTex.needsUpdate = true;
+/* 共享 uniform：摊平进度 0=折好（照片原色）→ 1=摊平（采样纸纹，与纸条一致） */
+const uFlat = { value: 0 };
+function coverMaterial(keep) {
+  const mat = new THREE.MeshBasicMaterial({
+    map: coverTex, transparent: true, alphaTest: 0.06, side: THREE.DoubleSide, depthWrite: true
+  });
+  mat.onBeforeCompile = (sh) => {
+    sh.vertexShader = 'attribute vec2 aRect;\nattribute vec2 aPuv;\nvarying vec2 vRect;\nvarying vec2 vPuv;\n' +
+      sh.vertexShader.replace('#include <begin_vertex>', '#include <begin_vertex>\nvRect = aRect;\nvPuv = aPuv;');
+    sh.fragmentShader = 'varying vec2 vRect;\nvarying vec2 vPuv;\nuniform vec3 uClip;\nuniform sampler2D uPaperTex;\nuniform float uFlat;\n' +
+      sh.fragmentShader
+        .replace('#include <clipping_planes_fragment>',
+          'if (vRect.x * uClip.x + vRect.y * uClip.y > uClip.z + 1e-5) discard;\n#include <clipping_planes_fragment>')
+        .replace('#include <map_fragment>',
+          '#include <map_fragment>\nvec3 paperCol = texture2D(uPaperTex, vPuv).rgb * 0.92;\ndiffuseColor.rgb = mix(diffuseColor.rgb, paperCol, uFlat);');
+    sh.uniforms.uClip = { value: new THREE.Vector3(keep.n[0], keep.n[1], keep.d) };
+    sh.uniforms.uPaperTex = { value: paperOnlyTex };
+    sh.uniforms.uFlat = uFlat;
+    mat.userData.shader = sh;
+  };
+  return mat;
+}
+const B0 = frameBounds(FRAMES[0]);   /* 摊平态纸面范围：封面顶点按同一映射取纸纹 UV */
+const pieces = makePieces(sampleFrame(100, frameV) && (writeTriangles(frameV, 100, posArr), posArr));
+const covMeshes = pieces.map((pc) => {
+  const g = new THREE.BufferGeometry();
+  const n = pc.verts.length;
+  const pos = new Float32Array(n * 3), nor = new Float32Array(n * 3);
+  const rect = new Float32Array(n * 2), uv = new Float32Array(n * 2);
+  const puv = new Float32Array(n * 2);
+  for (let i = 0; i < n; i++) {
+    const [x, z] = pc.verts[i];
+    rect[i * 2] = x; rect[i * 2 + 1] = z;
+    uv[i * 2] = (x - RECT.minX) / RECT.w; uv[i * 2 + 1] = 1 - (z - RECT.minZ) / RECT.h;
+    puv[i * 2] = (x - B0.minX) / (B0.maxX - B0.minX); puv[i * 2 + 1] = 1 - (z - B0.minZ) / (B0.maxZ - B0.minZ);
+  }
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  g.setAttribute('normal', new THREE.BufferAttribute(nor, 3));
+  g.setAttribute('aRect', new THREE.BufferAttribute(rect, 2));
+  g.setAttribute('aPuv', new THREE.BufferAttribute(puv, 2));
+  g.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+  g.frustumCulled = false;
+  const mesh = new THREE.Mesh(g, coverMaterial(pc.keep));
+  mesh.renderOrder = 1;
+  scene.add(mesh);
+  return mesh;
+});
+const covTmp = new Float32Array(Math.max(...pieces.map(p => p.verts.length)) * 3);
+
+/* 每帧更新全部几何 */
+function updateAll(p) {
+  /* 一展开封面就翻成纸背面：p=90→70 之间快速从照片色过渡到纸色，之后全程是纸 */
+  uFlat.value = 1 - smoothstep(70, 90, p);
+  sampleFrame(p, frameV);
+  writeTriangles(frameV, p, posArr);
+  frontGeom.attributes.position.array.set(posArr);
+  backGeom.attributes.position.array.set(posArr);
+  frontGeom.attributes.position.needsUpdate = true;
+  backGeom.attributes.position.needsUpdate = true;
+  frontGeom.computeVertexNormals(); backGeom.computeVertexNormals();
+  pieces.forEach((pc, i) => {
+    const { pos, n } = pieceWorld(pc, posArr, p, covTmp);
+    const g = covMeshes[i].geometry;
+    g.attributes.position.array.set(pos.subarray(0, pc.verts.length * 3));
+    g.attributes.position.needsUpdate = true;
+    for (let j = 0; j < pc.verts.length; j++) {
+      g.attributes.normal.array[j * 3] = n[0];
+      g.attributes.normal.array[j * 3 + 1] = n[1];
+      g.attributes.normal.array[j * 3 + 2] = n[2];
+    }
+    g.attributes.normal.needsUpdate = true;
+  });
+}
+
+/* ── 取景 ── */
+const fitPts = (function () {
+  const pts = coverFitPoints();
+  for (let i = 0; i < FRAMES[0].length; i++) pts.push(FRAMES[0][i]);
+  return pts;
+})();
+const fitCenter = (function () {
+  let mnx = 1e9, mxx = -1e9, mny = 1e9, mxy = -1e9, mnz = 1e9, mxz = -1e9;
+  for (let i = 0; i < fitPts.length; i += 3) {
+    mnx = Math.min(mnx, fitPts[i]); mxx = Math.max(mxx, fitPts[i]);
+    mny = Math.min(mny, fitPts[i + 1]); mxy = Math.max(mxy, fitPts[i + 1]);
+    mnz = Math.min(mnz, fitPts[i + 2]); mxz = Math.max(mxz, fitPts[i + 2]);
+  }
+  return [(mnx + mxx) / 2, (mny + mxy) / 2, (mnz + mxz) / 2];
+})();
+const controls = new THREE.OrbitControls(camera, canvas);
+controls.target.set(fitCenter[0], fitCenter[1], fitCenter[2]);
+controls.enableDamping = true; controls.dampingFactor = 0.08;
+controls.minDistance = 0.5; controls.maxDistance = 8;
+const VIEW = { polar: 0.95, azimuth: 0.42, fill: 0.96 };
+function frameCamera(keepView) {
+  const w = canvas.clientWidth || window.innerWidth, h = canvas.clientHeight || window.innerHeight;
+  renderer.setSize(w, h, false);
+  camera.aspect = w / h; camera.updateProjectionMatrix();
+  if (!keepView) { /* 初始视角 */ }
+  const d = fitDistance(fitPts, fitCenter, VIEW.polar, camera.fov, camera.aspect, VIEW.fill);
+  const sp = Math.sin(VIEW.polar), cp = Math.cos(VIEW.polar);
+  camera.position.set(
+    fitCenter[0] + d * sp * Math.sin(VIEW.azimuth),
+    fitCenter[1] + d * cp,
+    fitCenter[2] + d * sp * Math.cos(VIEW.azimuth));
+  camera.lookAt(controls.target.x, fitCenter[1], controls.target.z);
+  controls.target.set(fitCenter[0], fitCenter[1], fitCenter[2]);
+  controls.update();
+}
+
+/* ── UI ── */
+const slider = document.getElementById('s');
+const label = document.getElementById('val');
+const playBtn = document.getElementById('play');
+function setP(v) {
+  state.p = v;
+  state.playing = false;
+  playBtn.textContent = '▶';
+  slider.value = String(v);
+  label.textContent = Math.round(v) + '%';
+  updateAll(v);
+}
+slider.addEventListener('input', () => setP(parseFloat(slider.value)));
+function startLoop() {
+  state.t0 = performance.now() / 1000 - openingTime(state.p);
+  state.playing = true;
+  playBtn.textContent = '❚❚';
+}
+playBtn.addEventListener('click', () => { state.playing ? (state.playing = false, playBtn.textContent = '▶') : startLoop(); });
+
+/* ── 主循环 ── */
+function tick() {
+  requestAnimationFrame(tick);
+  const now = performance.now() / 1000;
+  if (state.playing) {
+    const p = loopP(now - state.t0);
+    state.p = p;
+    slider.value = String(p);
+    label.textContent = Math.round(p) + '%';
+    updateAll(p);
+  }
+  controls.update();
+  renderer.render(scene, camera);
+}
+
+document.addEventListener('visibilitychange', () => { if (!document.hidden && !state.playing) updateAll(state.p); });
+window.addEventListener('resize', () => frameCamera(true));
+
+/* ── 无头渲染钩子（shot.py 用；不影响正常浏览） ── */
+window.__d = {
+  state, covMeshes,
+  setP: (v) => { state.playing = false; state.p = v; slider.value = String(v); label.textContent = Math.round(v) + '%'; updateAll(v); },
+  fitOnce: (w, h, fill) => {
+    renderer.setSize(w, h, false);
+    camera.aspect = w / h; camera.updateProjectionMatrix();
+    const d = fitDistance(fitPts, fitCenter, VIEW.polar, camera.fov, camera.aspect, fill == null ? VIEW.fill : fill);
+    const sp = Math.sin(VIEW.polar), cp = Math.cos(VIEW.polar);
+    camera.position.set(
+      fitCenter[0] + d * sp * Math.sin(VIEW.azimuth),
+      fitCenter[1] + d * cp,
+      fitCenter[2] + d * sp * Math.cos(VIEW.azimuth));
+    camera.lookAt(fitCenter[0], fitCenter[1], fitCenter[2]);
+    controls.target.set(fitCenter[0], fitCenter[1], fitCenter[2]);
+    controls.update();
+    return { w, h, d };
+  },
+  shotAt: (f, fmt) => { renderer.render(scene, camera); return renderer.domElement.toDataURL(fmt || 'image/png'); }
+};
+
+/* 等字体就绪再画字（webfont 异步加载） */
+if (document.fonts && document.fonts.ready) {
+  document.fonts.ready.then(() => { drawPaper(); paperTex.needsUpdate = true; });
+}
+
+/* 启动：先按折好态摆好，再进入循环播放 */
+updateAll(100);
+slider.value = '100'; label.textContent = '100%';
+frameCamera(false);
+tick();
+})();
+</script>
+</body>
+</html>
